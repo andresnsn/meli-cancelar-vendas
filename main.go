@@ -45,17 +45,27 @@ func main() {
 		cancel()
 	}()
 
-	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx,
-		append(chromedp.DefaultExecAllocatorOptions[:],
-			chromedp.UserDataDir(profileDir),
-			chromedp.Flag("headless", false),
-			chromedp.Flag("disable-gpu", false),
-			chromedp.Flag("no-first-run", true),
-			chromedp.Flag("no-default-browser-check", true),
-			chromedp.Flag("disable-extensions", false),
-			chromedp.WindowSize(1280, 900),
-		)...,
+	// Find Chrome binary
+	chromePath := findChrome()
+	if chromePath != "" {
+		fmt.Printf("[INFO] Chrome encontrado: %s\n", chromePath)
+	}
+
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.UserDataDir(profileDir),
+		chromedp.Flag("headless", false),
+		chromedp.Flag("disable-gpu", false),
+		chromedp.Flag("no-first-run", true),
+		chromedp.Flag("no-default-browser-check", true),
+		chromedp.Flag("disable-extensions", false),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.WindowSize(1280, 900),
 	)
+	if chromePath != "" {
+		opts = append(opts, chromedp.ExecPath(chromePath))
+	}
+
+	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx, opts...)
 	defer allocCancel()
 
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx,
@@ -377,4 +387,27 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// findChrome searches for a Chrome/Chromium binary in common locations.
+func findChrome() string {
+	candidates := []string{
+		// Standard Linux install paths (absolute, checked first)
+		"/usr/bin/google-chrome-stable",
+		"/usr/bin/google-chrome",
+		"/usr/bin/chromium-browser",
+		"/usr/bin/chromium",
+		// macOS
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+		// Fallback non-standard paths
+		"/opt/.devin/chrome/chrome/linux-133.0.6943.126/chrome-linux64/chrome",
+		"/opt/.devin/chrome/chrome/linux-137.0.7118.2/chrome-linux64/chrome",
+	}
+
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	return ""
 }
