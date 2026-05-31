@@ -165,6 +165,9 @@ func main() {
 					defer wg.Done()
 					defer func() { <-sem }() // release worker slot
 
+					// Stagger start to avoid race conditions between tabs
+					time.Sleep(time.Duration(idx) * 2 * time.Second)
+
 					// Each goroutine gets its own tab
 					tabCtx, tabCancel := chromedp.NewContext(browserCtx)
 					defer tabCancel()
@@ -358,27 +361,86 @@ func processSale(ctx context.Context, saleURL, saleNumber string, current, total
 	}
 	fmt.Printf("%s        Sem nota fiscal — prosseguindo com cancelamento.\n", prefix)
 
-	// Step 5: Open menu and click cancel
-	fmt.Printf("%s [5/8] Abrindo menu e clicando 'Cancelar venda'...\n", prefix)
-	if err := openMenuAndClickCancel(ctx); err != nil {
-		fmt.Printf("%s [ERRO] %v\n", prefix, err)
-		result.Cancelled = fmt.Sprintf("Erro: %v", err)
+	// Steps 5-6b: Cancel with retry and verification
+	maxAttempts := 2
+	cancelled := false
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			fmt.Printf("%s [RETRY] Tentativa %d de cancelamento...\n", prefix, attempt)
+			// Reload page before retry
+			chromedp.Run(ctx, chromedp.Navigate(saleURL), chromedp.WaitReady("body", chromedp.ByQuery))
+			retryCardCtx, retryCardCancel := context.WithTimeout(ctx, 15*time.Second)
+			chromedp.Run(retryCardCtx, chromedp.WaitVisible(`.row-card-container`, chromedp.ByQuery))
+			retryCardCancel()
+			time.Sleep(2 * time.Second)
+		}
+
+		// Step 5: Open menu and click cancel
+		fmt.Printf("%s [5/8] Abrindo menu e clicando 'Cancelar venda'...\n", prefix)
+		if err := openMenuAndClickCancel(ctx); err != nil {
+			fmt.Printf("%s [ERRO] %v\n", prefix, err)
+			if attempt == maxAttempts {
+				result.Cancelled = fmt.Sprintf("Erro: %v", err)
+				return result
+			}
+			continue
+		}
+
+		// Step 6: Select reason and confirm
+		fmt.Printf("%s [6/8] Selecionando motivo e confirmando...\n", prefix)
+		if err := selectReasonAndConfirm(ctx); err != nil {
+			fmt.Printf("%s [ERRO] %v\n", prefix, err)
+			if attempt == maxAttempts {
+				result.Cancelled = fmt.Sprintf("Erro: %v", err)
+				return result
+			}
+			continue
+		}
+
+		// Step 6b: Verify cancellation actually took effect
+		fmt.Printf("%s [6b/8] Verificando cancelamento...\n", prefix)
+		time.Sleep(3 * time.Second)
+		chromedp.Run(ctx, chromedp.Navigate(saleURL), chromedp.WaitReady("body", chromedp.ByQuery))
+		vCtx, vCancel := context.WithTimeout(ctx, 15*time.Second)
+		chromedp.Run(vCtx, chromedp.WaitVisible(`.row-card-container`, chromedp.ByQuery))
+		vCancel()
+		time.Sleep(2 * time.Second)
+
+		var verifyStatus string
+		chromedp.Run(ctx, chromedp.Evaluate(`
+			(function() {
+				var el = document.querySelector('.sc-status-action-row__status');
+				if (el) return el.textContent.trim();
+				return '';
+			})()
+		`, &verifyStatus))
+
+		if strings.Contains(strings.ToLower(verifyStatus), "cancel") {
+			result.Cancelled = "Sim"
+			fmt.Printf("%s [OK] Venda cancelada com sucesso! (status: %s)\n", prefix, verifyStatus)
+			cancelled = true
+			break
+		} else if verifyStatus == "" {
+			result.Cancelled = "Sim (não verificado)"
+			fmt.Printf("%s [OK] Fluxo de cancelamento concluído (verificação indisponível)\n", prefix)
+			cancelled = true
+			break
+		} else {
+			fmt.Printf("%s [AVISO] Tentativa %d: status ainda '%s'\n", prefix, attempt, verifyStatus)
+			if attempt == maxAttempts {
+				result.Cancelled = fmt.Sprintf("Falhou (status: %s)", verifyStatus)
+				fmt.Printf("%s [ERRO] Cancelamento NÃO confirmado após %d tentativas.\n", prefix, maxAttempts)
+				return result
+			}
+		}
+	}
+
+	if !cancelled {
 		return result
 	}
 
-	// Step 6: Select reason and confirm
-	fmt.Printf("%s [6/8] Selecionando motivo e confirmando...\n", prefix)
-	if err := selectReasonAndConfirm(ctx); err != nil {
-		fmt.Printf("%s [ERRO] %v\n", prefix, err)
-		result.Cancelled = fmt.Sprintf("Erro: %v", err)
-		return result
-	}
-	result.Cancelled = "Sim"
-	fmt.Printf("%s [OK] Venda cancelada com sucesso!\n", prefix)
-
-	// Step 7: Reload and add note
-	fmt.Printf("%s [7/8] Recarregando página para adicionar nota...\n", prefix)
-	time.Sleep(2 * time.Second)
+	// Step 7: Add note (page already reloaded from verification)
+	fmt.Printf("%s [7/8] Adicionando nota...\n", prefix)
 	if err := addNote(ctx, saleURL, prefix); err != nil {
 		fmt.Printf("%s [AVISO] Falha ao adicionar nota: %v\n", prefix, err)
 		result.NoteAdded = fmt.Sprintf("Erro: %v", err)
@@ -695,12 +757,28 @@ func generateExcel(results []saleResult) string {
 	}
 
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
-	filename := fmt.Sprintf("relatorio_cancelamento_%s.xlsx", timestamp)
-	if err := f.SaveAs(filename); err != nil {
+	baseName := fmt.Sprintf("relatorio_cancelamento_%s.xlsx", timestamp)
+
+	// Save in the same directory as the executable
+	exePath, err := os.Executable()
+	if err == nil {
+		exeDir := filepath.Dir(exePath)
+		fullPath := filepath.Join(exeDir, baseName)
+		if err := f.SaveAs(fullPath); err != nil {
+			fmt.Printf("[AVISO] Falha ao salvar em %s, tentando diretório atual...\n", fullPath)
+			if err2 := f.SaveAs(baseName); err2 != nil {
+				fmt.Printf("[ERRO] Falha ao salvar Excel: %v\n", err2)
+				return ""
+			}
+			return baseName
+		}
+		return fullPath
+	}
+	if err := f.SaveAs(baseName); err != nil {
 		fmt.Printf("[ERRO] Falha ao salvar Excel: %v\n", err)
 		return ""
 	}
-	return filename
+	return baseName
 }
 
 func cellName(col, row int) string {
