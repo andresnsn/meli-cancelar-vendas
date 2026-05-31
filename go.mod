@@ -1,4 +1,4 @@
-module github.com/andresnsn/ml-cancelar-vendas
+module github.com/andresnsn/meli-cancelar-vendas
 
 go 1.26
 

@@ -1,13 +1,14 @@
 # Binaries
-ml-cancelar-vendas
-ml-cancelar-vendas.exe
+meli-cancelar-vendas
+meli-cancelar-vendas.exe
+meli-cancelar-vendas-*
 *.exe
 *.dll
 *.so
 *.dylib
 
 # Chrome profile (contains session cookies)
-.ml-cancelar-vendas/
+.meli-cancelar-vendas/
 
 # Test binary
 *.test
@@ -18,3 +19,4 @@ go.work
 # OS files
 .DS_Store
 Thumbs.db
+ml-cancelar-vendas

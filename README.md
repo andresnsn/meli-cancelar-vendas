@@ -1,4 +1,4 @@
-# ML Cancelar Vendas
+# Meli Cancelar Vendas
 
 Ferramenta de linha de comando em Go para cancelamento em lote de vendas no Mercado Livre.
 
@@ -21,35 +21,35 @@ Ferramenta de linha de comando em Go para cancelamento em lote de vendas no Merc
 
 ### Opção 1: Baixar o binário
 
-Baixe o binário pré-compilado da [página de releases](https://github.com/andresnsn/ml-cancelar-vendas/releases).
+Baixe o binário pré-compilado da [página de releases](https://github.com/andresnsn/meli-cancelar-vendas/releases).
 
 ### Opção 2: Compilar do fonte
 
 ```bash
 # Requer Go 1.22+
-git clone https://github.com/andresnsn/ml-cancelar-vendas.git
-cd ml-cancelar-vendas
-go build -o ml-cancelar-vendas .
+git clone https://github.com/andresnsn/meli-cancelar-vendas.git
+cd meli-cancelar-vendas
+go build -o meli-cancelar-vendas .
 ```
 
 #### Compilar para Windows (cross-compile)
 
 ```bash
-GOOS=windows GOARCH=amd64 go build -o ml-cancelar-vendas.exe .
+GOOS=windows GOARCH=amd64 go build -o meli-cancelar-vendas.exe .
 ```
 
 #### Compilar para macOS
 
 ```bash
-GOOS=darwin GOARCH=amd64 go build -o ml-cancelar-vendas-mac .
+GOOS=darwin GOARCH=amd64 go build -o meli-cancelar-vendas-mac .
 # Para Apple Silicon (M1/M2/M3):
-GOOS=darwin GOARCH=arm64 go build -o ml-cancelar-vendas-mac-arm64 .
+GOOS=darwin GOARCH=arm64 go build -o meli-cancelar-vendas-mac-arm64 .
 ```
 
 ## Uso
 
 ```bash
-./ml-cancelar-vendas
+./meli-cancelar-vendas
 ```
 
 ### Primeiro uso
@@ -83,11 +83,11 @@ O número após `search=` é o identificador único de cada venda.
 
 O perfil do Chrome é salvo em:
 
-| SO      | Localização                                    |
-|---------|------------------------------------------------|
-| Linux   | `~/.ml-cancelar-vendas/`                       |
-| macOS   | `~/Library/Application Support/.ml-cancelar-vendas/` |
-| Windows | `%LOCALAPPDATA%\.ml-cancelar-vendas\`          |
+| SO      | Localização                                          |
+|---------|------------------------------------------------------|
+| Linux   | `~/.meli-cancelar-vendas/`                           |
+| macOS   | `~/Library/Application Support/.meli-cancelar-vendas/` |
+| Windows | `%LOCALAPPDATA%\.meli-cancelar-vendas\`              |
 
 Para forçar um novo login, delete a pasta do perfil.
 
@@ -101,3 +101,7 @@ Para forçar um novo login, delete a pasta do perfil.
 ├── README.md        # Este arquivo
 └── .gitignore       # Arquivos ignorados pelo git
 ```
+
+## Tecnologia
+
+- **[chromedp](https://github.com/chromedp/chromedp)** — Automação do Chrome via Chrome DevTools Protocol (CDP). Mesma tecnologia que Puppeteer/Playwright usam por baixo, mas em Go puro. Gera binário standalone sem dependências externas.

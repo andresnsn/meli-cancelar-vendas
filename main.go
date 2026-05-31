@@ -17,8 +17,7 @@ import (
 )
 
 const (
-	mlBaseURL       = "https://www.mercadolivre.com.br/vendas/omni/lista"
-	profileDirName  = ".ml-cancelar-vendas"
+	profileDirName  = ".meli-cancelar-vendas"
 	loginCheckURL   = "https://www.mercadolivre.com.br/vendas/omni/lista"
 	loginTimeoutMin = 5
 )
@@ -27,15 +26,14 @@ func main() {
 	log.SetFlags(log.Ltime)
 
 	fmt.Println("╔══════════════════════════════════════════════════╗")
-	fmt.Println("║     ML Cancelar Vendas - Mercado Livre          ║")
-	fmt.Println("║     Cancelamento em lote de vendas               ║")
+	fmt.Println("║     Meli Cancelar Vendas - Mercado Livre        ║")
+	fmt.Println("║     Cancelamento em lote de vendas              ║")
 	fmt.Println("╚══════════════════════════════════════════════════╝")
 	fmt.Println()
 
 	profileDir := getProfileDir()
 	fmt.Printf("[INFO] Perfil do Chrome: %s\n", profileDir)
 
-	// Handle graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -47,7 +45,6 @@ func main() {
 		cancel()
 	}()
 
-	// Create Chrome with persistent profile
 	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx,
 		append(chromedp.DefaultExecAllocatorOptions[:],
 			chromedp.UserDataDir(profileDir),
@@ -66,13 +63,11 @@ func main() {
 	)
 	defer browserCancel()
 
-	// Start browser and check login
 	fmt.Println("[INFO] Iniciando o Chrome...")
 	if err := ensureLogin(browserCtx); err != nil {
 		log.Fatalf("[ERRO] Falha ao verificar login: %v", err)
 	}
 
-	// Main loop
 	for {
 		urls := readURLs()
 		if len(urls) == 0 {
@@ -103,7 +98,6 @@ func main() {
 			}
 			fmt.Println()
 
-			// Small delay between sales to avoid rate limiting
 			if i < len(urls)-1 {
 				time.Sleep(2 * time.Second)
 			}
@@ -119,7 +113,6 @@ func main() {
 	fmt.Println("[INFO] Programa encerrado.")
 }
 
-// getProfileDir returns the path to the Chrome profile directory.
 func getProfileDir() string {
 	var base string
 	switch runtime.GOOS {
@@ -131,14 +124,13 @@ func getProfileDir() string {
 	case "darwin":
 		home, _ := os.UserHomeDir()
 		base = filepath.Join(home, "Library", "Application Support")
-	default: // linux
+	default:
 		home, _ := os.UserHomeDir()
 		base = home
 	}
 	return filepath.Join(base, profileDirName)
 }
 
-// readURLs reads URLs from stdin until an empty line or EOF.
 func readURLs() []string {
 	fmt.Println("Cole as URLs abaixo (uma por linha).")
 	fmt.Println("Quando terminar, pressione Enter em uma linha vazia para iniciar.")
@@ -153,7 +145,6 @@ func readURLs() []string {
 		if line == "" {
 			break
 		}
-		// Validate URL
 		if isValidMLURL(line) {
 			urls = append(urls, line)
 			fmt.Printf("  + URL adicionada (%d)\n", len(urls))
@@ -165,14 +156,12 @@ func readURLs() []string {
 	return urls
 }
 
-// isValidMLURL checks if the URL matches the expected Mercado Livre pattern.
 func isValidMLURL(u string) bool {
 	return strings.Contains(u, "mercadolivre.com.br/vendas") ||
 		strings.Contains(u, "mercadolibre.com") ||
 		strings.Contains(u, "mercadolivre.com.br")
 }
 
-// ensureLogin navigates to Mercado Livre and waits for the user to be logged in.
 func ensureLogin(ctx context.Context) error {
 	fmt.Println("[INFO] Verificando login no Mercado Livre...")
 
@@ -183,10 +172,8 @@ func ensureLogin(ctx context.Context) error {
 		return fmt.Errorf("navegar para ML: %w", err)
 	}
 
-	// Wait a bit for any redirects
 	time.Sleep(3 * time.Second)
 
-	// Check if we're on the login page
 	var currentURL string
 	if err := chromedp.Run(ctx, chromedp.Location(&currentURL)); err != nil {
 		return fmt.Errorf("obter URL atual: %w", err)
@@ -203,7 +190,6 @@ func ensureLogin(ctx context.Context) error {
 		fmt.Println("╚══════════════════════════════════════════════════╝")
 		fmt.Println()
 
-		// Wait for user to complete login (up to loginTimeoutMin minutes)
 		timeout := time.After(time.Duration(loginTimeoutMin) * time.Minute)
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
@@ -229,8 +215,26 @@ func ensureLogin(ctx context.Context) error {
 	return nil
 }
 
-// cancelSale performs the full cancellation flow for a single sale URL.
+// jsClick clicks an element via JavaScript to bypass styled/hidden inputs.
+func jsClick(sel string) chromedp.Action {
+	return chromedp.Evaluate(fmt.Sprintf(
+		`document.querySelector(%q)?.click()`, sel,
+	), nil)
+}
+
+// jsClickXPath clicks the first element matching an XPath via JavaScript.
+func jsClickXPath(xpath string) chromedp.Action {
+	return chromedp.Evaluate(fmt.Sprintf(
+		`(function(){
+			var r = document.evaluate(%q, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+			if (r.singleNodeValue) { r.singleNodeValue.click(); return true; }
+			return false;
+		})()`, xpath,
+	), nil)
+}
+
 func cancelSale(ctx context.Context, saleURL string) error {
+	// Step 1: Navigate
 	fmt.Println("  [1/6] Navegando para a página da venda...")
 	if err := chromedp.Run(ctx,
 		chromedp.Navigate(saleURL),
@@ -239,27 +243,31 @@ func cancelSale(ctx context.Context, saleURL string) error {
 		return fmt.Errorf("navegar: %w", err)
 	}
 
-	// Wait for the sale card to load
+	// Step 2: Wait for sale card
 	fmt.Println("  [2/6] Aguardando card da venda carregar...")
-	if err := chromedp.Run(ctx,
+	cardCtx, cardCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cardCancel()
+	if err := chromedp.Run(cardCtx,
 		chromedp.WaitVisible(`.row-card-container`, chromedp.ByQuery),
 	); err != nil {
-		return fmt.Errorf("card da venda não encontrado: %w", err)
+		return fmt.Errorf("card da venda não encontrado (timeout 15s): %w", err)
 	}
 	time.Sleep(1 * time.Second)
 
-	// Click the overflow menu button (three dots)
+	// Step 3: Click overflow menu (three dots)
 	fmt.Println("  [3/6] Abrindo menu flutuante...")
 	if err := chromedp.Run(ctx,
 		chromedp.Click(`button[data-testid="open-floating-menu-without-tooltip"]`, chromedp.ByQuery),
 	); err != nil {
 		return fmt.Errorf("botão menu flutuante não encontrado: %w", err)
 	}
-	time.Sleep(1 * time.Second)
+	time.Sleep(1500 * time.Millisecond)
 
-	// Click "Cancelar venda" button in the floating menu
+	// Step 4: Click "Cancelar venda" in dropdown
 	fmt.Println("  [4/6] Clicando em 'Cancelar venda'...")
-	if err := chromedp.Run(ctx,
+	cancelBtnCtx, cancelBtnCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelBtnCancel()
+	if err := chromedp.Run(cancelBtnCtx,
 		chromedp.WaitVisible(`button[aria-label="Cancelar venda"]`, chromedp.ByQuery),
 		chromedp.Click(`button[aria-label="Cancelar venda"]`, chromedp.ByQuery),
 	); err != nil {
@@ -267,52 +275,82 @@ func cancelSale(ctx context.Context, saleURL string) error {
 	}
 	time.Sleep(2 * time.Second)
 
-	// Wait for the modal dialog to appear
+	// Step 5: Select reason in modal
 	fmt.Println("  [5/6] Selecionando motivo do cancelamento...")
-	if err := chromedp.Run(ctx,
+	modalCtx, modalCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer modalCancel()
+	if err := chromedp.Run(modalCtx,
 		chromedp.WaitVisible(`div[role="dialog"]`, chromedp.ByQuery),
 	); err != nil {
 		return fmt.Errorf("modal não apareceu: %w", err)
 	}
 	time.Sleep(1 * time.Second)
 
-	// Click "Tive problemas com o envio" radio button
+	// Click "Tive problemas com o envio" — use JS click because the <input> is
+	// visually hidden behind a styled <div class="andes-radio">.
+	// First try clicking the label, then the input directly via JS.
 	if err := chromedp.Run(ctx,
-		chromedp.Click(`input[value="shipment_problem"]`, chromedp.ByQuery),
+		jsClickXPath(`//label[contains(., "problemas com o envio")]`),
 	); err != nil {
-		return fmt.Errorf("radio 'problemas com envio' não encontrado: %w", err)
+		if err2 := chromedp.Run(ctx, jsClick(`input[value="shipment_problem"]`)); err2 != nil {
+			return fmt.Errorf("radio 'problemas com envio': %w", err2)
+		}
 	}
 	time.Sleep(2 * time.Second)
 
-	// Now look for and click "Outro" sub-option
-	// The sub-options appear as a nested list after selecting the main reason
-	if err := chromedp.Run(ctx,
-		chromedp.Click(`//label[contains(., "Outro")]`, chromedp.BySearch),
-	); err != nil {
-		// Fallback: try clicking by radio value containing "other"
-		if err2 := chromedp.Run(ctx,
-			chromedp.Click(`//span[contains(text(), "Outro")]`, chromedp.BySearch),
-		); err2 != nil {
-			return fmt.Errorf("sub-opção 'Outro' não encontrada: %w (tentativa 2: %v)", err, err2)
+	// Click "Outro" sub-option (appears after selecting the main reason).
+	// Try multiple selectors to be resilient.
+	outroClicked := false
+	strategies := []struct {
+		name   string
+		action chromedp.Action
+	}{
+		{"label xpath", jsClickXPath(`//label[contains(., "Outro")]`)},
+		{"span xpath", jsClickXPath(`//span[contains(text(), "Outro")]`)},
+		{"input value", jsClick(`input[value="other"]`)},
+		{"li text", jsClickXPath(`//li[contains(., "Outro")]`)},
+	}
+	for _, s := range strategies {
+		if err := chromedp.Run(ctx, s.action); err == nil {
+			outroClicked = true
+			break
 		}
+	}
+	if !outroClicked {
+		return fmt.Errorf("sub-opção 'Outro' não encontrada após todas as tentativas")
 	}
 	time.Sleep(1 * time.Second)
 
-	// Click the confirm "Cancelar venda" button inside the modal
+	// Step 6: Confirm cancellation
 	fmt.Println("  [6/6] Confirmando cancelamento...")
-	// The confirm button is the one inside the modal actions area
-	if err := chromedp.Run(ctx,
-		chromedp.WaitEnabled(`div[role="dialog"] .sc-cancel-sale__actions button[aria-label="Cancelar venda"]`, chromedp.ByQuery),
-		chromedp.Click(`div[role="dialog"] .sc-cancel-sale__actions button[aria-label="Cancelar venda"]`, chromedp.ByQuery),
+
+	// Wait for the confirm button to become enabled (it starts disabled)
+	confirmSel := `div[role="dialog"] .sc-cancel-sale__actions button[aria-label="Cancelar venda"]`
+	confirmCtx, confirmCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer confirmCancel()
+
+	if err := chromedp.Run(confirmCtx,
+		chromedp.WaitEnabled(confirmSel, chromedp.ByQuery),
 	); err != nil {
-		return fmt.Errorf("botão confirmar cancelamento: %w", err)
+		// Fallback: try any loud/primary button inside modal actions
+		confirmSel = `div[role="dialog"] .sc-cancel-sale__actions button.andes-button--loud`
+		if err2 := chromedp.Run(confirmCtx,
+			chromedp.WaitEnabled(confirmSel, chromedp.ByQuery),
+		); err2 != nil {
+			return fmt.Errorf("botão confirmar não habilitou: %w", err)
+		}
 	}
 
-	// Wait for the cancellation to be processed
-	time.Sleep(3 * time.Second)
+	if err := chromedp.Run(ctx,
+		chromedp.Click(confirmSel, chromedp.ByQuery),
+	); err != nil {
+		return fmt.Errorf("falha ao clicar confirmar: %w", err)
+	}
 
-	// Check if cancellation was successful by looking for success indicators
-	// or checking if the modal closed
+	// Wait for cancellation to process
+	time.Sleep(4 * time.Second)
+
+	// Verify: check if modal closed or shows success
 	var dialogExists bool
 	if err := chromedp.Run(ctx,
 		chromedp.Evaluate(`document.querySelector('div[role="dialog"]') !== null`, &dialogExists),
@@ -321,16 +359,14 @@ func cancelSale(ctx context.Context, saleURL string) error {
 	}
 
 	if dialogExists {
-		// Check if there's an error message or if it's a success dialog
 		var modalText string
-		chromedp.Run(ctx,
+		_ = chromedp.Run(ctx,
 			chromedp.Text(`div[role="dialog"]`, &modalText, chromedp.ByQuery),
 		)
 		if strings.Contains(strings.ToLower(modalText), "erro") || strings.Contains(strings.ToLower(modalText), "error") {
-			return fmt.Errorf("possível erro no cancelamento. Texto do modal: %s", truncate(modalText, 200))
+			return fmt.Errorf("possível erro no cancelamento: %s", truncate(modalText, 200))
 		}
-		// Modal still open but no error — might be a confirmation dialog
-		log.Println("  [AVISO] Modal ainda aberto após confirmar. Verifique o navegador.")
+		log.Println("  [AVISO] Modal ainda aberto. Pode ser confirmação — verifique o navegador se necessário.")
 	}
 
 	return nil
