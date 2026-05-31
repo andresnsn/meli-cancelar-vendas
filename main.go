@@ -89,6 +89,8 @@ func main() {
 		opts = append(opts, chromedp.Flag("headless", "new"))
 		opts = append(opts, chromedp.Flag("disable-blink-features", "AutomationControlled"))
 		opts = append(opts, chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"))
+	} else {
+		opts = append(opts, chromedp.Flag("headless", false))
 	}
 	if chromePath != "" {
 		opts = append(opts, chromedp.ExecPath(chromePath))
