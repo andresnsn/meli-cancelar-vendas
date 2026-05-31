@@ -429,38 +429,45 @@ func collectSaleData(ctx context.Context, result *saleResult) {
 
 // openMenuAndClickCancel opens the overflow menu and clicks "Cancelar venda".
 func openMenuAndClickCancel(ctx context.Context) error {
-	// Try clicking the menu button, with JS fallback
-	if err := chromedp.Run(ctx,
-		chromedp.Click(`button[data-testid="open-floating-menu-without-tooltip"]`, chromedp.ByQuery),
-	); err != nil {
-		// JS fallback for menu button
-		if err2 := chromedp.Run(ctx, jsClick(`button[data-testid="open-floating-menu-without-tooltip"]`)); err2 != nil {
-			if err3 := chromedp.Run(ctx, jsClick(`button[aria-label="open-floating-menu"]`)); err3 != nil {
-				return fmt.Errorf("menu flutuante não encontrado: %w", err)
-			}
-		}
+	// Click the menu button (3 dots) with JS fallback
+	if err := chromedp.Run(ctx, chromedp.Evaluate(`
+		(function() {
+			var el = document.querySelector('button[data-testid="open-floating-menu-without-tooltip"]');
+			if (!el) el = document.querySelector('button[aria-label="open-floating-menu"]');
+			if (el) { el.click(); return true; }
+			return false;
+		})()
+	`, nil)); err != nil {
+		return fmt.Errorf("menu flutuante não encontrado: %w", err)
 	}
 	time.Sleep(3 * time.Second)
 
-	// Try finding "Cancelar venda" button with multiple strategies
+	// Click "Cancelar venda" using aria-label, with fallbacks
 	cancelBtnCtx, cancelBtnCancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancelBtnCancel()
 
-	// Strategy 1: aria-label selector
 	if err := chromedp.Run(cancelBtnCtx,
 		chromedp.WaitVisible(`button[aria-label="Cancelar venda"]`, chromedp.ByQuery),
-		chromedp.Click(`button[aria-label="Cancelar venda"]`, chromedp.ByQuery),
 	); err != nil {
-		// Strategy 2: JS click by aria-label
-		if err2 := chromedp.Run(ctx, jsClick(`button[aria-label="Cancelar venda"]`)); err2 != nil {
-			// Strategy 3: XPath by button text
-			if err3 := chromedp.Run(ctx, jsClickXPath(`//button[.//span[contains(text(), "Cancelar venda")]]`)); err3 != nil {
-				// Strategy 4: find by id pattern (secondary-actions-list-1)
-				if err4 := chromedp.Run(ctx, jsClick(`#secondary-actions-list-1`)); err4 != nil {
-					return fmt.Errorf("botão 'Cancelar venda' não encontrado: %w", err)
+		return fmt.Errorf("botão 'Cancelar venda' não apareceu: %w", err)
+	}
+
+	if err := chromedp.Run(ctx, chromedp.Evaluate(`
+		(function() {
+			var el = document.querySelector('button[aria-label="Cancelar venda"]');
+			if (el) { el.click(); return true; }
+			// Fallback: find by text content
+			var btns = document.querySelectorAll('button[id^="secondary-actions-list"]');
+			for (var i = 0; i < btns.length; i++) {
+				if (btns[i].textContent.includes('Cancelar venda')) {
+					btns[i].click();
+					return true;
 				}
 			}
-		}
+			return false;
+		})()
+	`, nil)); err != nil {
+		return fmt.Errorf("botão 'Cancelar venda' não encontrado: %w", err)
 	}
 	time.Sleep(2 * time.Second)
 	return nil
@@ -468,53 +475,68 @@ func openMenuAndClickCancel(ctx context.Context) error {
 
 // selectReasonAndConfirm selects the cancellation reason and confirms.
 func selectReasonAndConfirm(ctx context.Context) error {
-	modalCtx, modalCancel := context.WithTimeout(ctx, 10*time.Second)
+	// Wait for the cancel modal specifically (not the chat widget)
+	modalCtx, modalCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer modalCancel()
 	if err := chromedp.Run(modalCtx,
-		chromedp.WaitVisible(`div[role="dialog"]`, chromedp.ByQuery),
+		chromedp.WaitVisible(`.andes-modal.sc-modal-action`, chromedp.ByQuery),
 	); err != nil {
-		return fmt.Errorf("modal não apareceu: %w", err)
+		return fmt.Errorf("modal de cancelamento não apareceu: %w", err)
 	}
 	time.Sleep(1 * time.Second)
 
-	if err := chromedp.Run(ctx,
-		jsClickXPath(`//label[contains(., "problemas com o envio")]`),
-	); err != nil {
-		if err2 := chromedp.Run(ctx, jsClick(`input[value="shipment_problem"]`)); err2 != nil {
-			return fmt.Errorf("radio 'problemas com envio': %w", err2)
-		}
+	// Click "Tive problemas com o envio" inside the cancel modal
+	if err := chromedp.Run(ctx, chromedp.Evaluate(`
+		(function() {
+			var modal = document.querySelector('.andes-modal.sc-modal-action');
+			if (!modal) return false;
+			var labels = modal.querySelectorAll('label');
+			for (var i = 0; i < labels.length; i++) {
+				if (labels[i].textContent.includes('problemas com o envio')) {
+					labels[i].click();
+					return true;
+				}
+			}
+			var input = modal.querySelector('input[value="shipment_problem"]');
+			if (input) { input.click(); return true; }
+			return false;
+		})()
+	`, nil)); err != nil {
+		return fmt.Errorf("radio 'problemas com envio': %w", err)
 	}
 	time.Sleep(2 * time.Second)
 
-	outroClicked := false
-	strategies := []struct {
-		name   string
-		action chromedp.Action
-	}{
-		{"label xpath", jsClickXPath(`//label[contains(., "Outro")]`)},
-		{"span xpath", jsClickXPath(`//span[contains(text(), "Outro")]`)},
-		{"input value", jsClick(`input[value="other"]`)},
-		{"li text", jsClickXPath(`//li[contains(., "Outro")]`)},
-	}
-	for _, s := range strategies {
-		if err := chromedp.Run(ctx, s.action); err == nil {
-			outroClicked = true
-			break
-		}
-	}
-	if !outroClicked {
-		return fmt.Errorf("sub-opção 'Outro' não encontrada")
+	// Click "Outro" sub-option (value is "shipment_problem_other")
+	if err := chromedp.Run(ctx, chromedp.Evaluate(`
+		(function() {
+			var modal = document.querySelector('.andes-modal.sc-modal-action');
+			if (!modal) return false;
+			var labels = modal.querySelectorAll('label');
+			for (var i = 0; i < labels.length; i++) {
+				if (labels[i].textContent.trim() === 'Outro') {
+					labels[i].click();
+					return true;
+				}
+			}
+			var input = modal.querySelector('input[value="shipment_problem_other"]');
+			if (input) { input.click(); return true; }
+			return false;
+		})()
+	`, nil)); err != nil {
+		return fmt.Errorf("sub-opção 'Outro': %w", err)
 	}
 	time.Sleep(1 * time.Second)
 
-	confirmSel := `div[role="dialog"] .sc-cancel-sale__actions button[aria-label="Cancelar venda"]`
-	confirmCtx, confirmCancel := context.WithTimeout(ctx, 10*time.Second)
+	// Wait for confirm button to become enabled and click it
+	confirmSel := `.andes-modal.sc-modal-action .sc-cancel-sale__actions button[aria-label="Cancelar venda"]`
+	confirmCtx, confirmCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer confirmCancel()
 
 	if err := chromedp.Run(confirmCtx,
 		chromedp.WaitEnabled(confirmSel, chromedp.ByQuery),
 	); err != nil {
-		confirmSel = `div[role="dialog"] .sc-cancel-sale__actions button.andes-button--loud`
+		// Fallback: try the loud button in the modal actions
+		confirmSel = `.andes-modal.sc-modal-action .sc-cancel-sale__actions button.andes-button--loud`
 		if err2 := chromedp.Run(confirmCtx,
 			chromedp.WaitEnabled(confirmSel, chromedp.ByQuery),
 		); err2 != nil {
@@ -550,22 +572,44 @@ func addNote(ctx context.Context, saleURL, prefix string) error {
 	}
 	time.Sleep(1 * time.Second)
 
-	if err := chromedp.Run(ctx,
-		chromedp.Click(`button[data-testid="open-floating-menu-without-tooltip"]`, chromedp.ByQuery),
-	); err != nil {
+	// Click menu button via JS
+	if err := chromedp.Run(ctx, chromedp.Evaluate(`
+		(function() {
+			var el = document.querySelector('button[data-testid="open-floating-menu-without-tooltip"]');
+			if (!el) el = document.querySelector('button[aria-label="open-floating-menu"]');
+			if (el) { el.click(); return true; }
+			return false;
+		})()
+	`, nil)); err != nil {
 		return fmt.Errorf("menu flutuante não encontrado: %w", err)
 	}
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(3 * time.Second)
 
-	addNoteBtnCtx, addNoteBtnCancel := context.WithTimeout(ctx, 10*time.Second)
+	// Click "Adicionar nota" via JS with fallback
+	addNoteBtnCtx, addNoteBtnCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer addNoteBtnCancel()
 	if err := chromedp.Run(addNoteBtnCtx,
 		chromedp.WaitVisible(`button[aria-label="Adicionar nota"]`, chromedp.ByQuery),
-		chromedp.Click(`button[aria-label="Adicionar nota"]`, chromedp.ByQuery),
 	); err != nil {
+		return fmt.Errorf("botão 'Adicionar nota' não apareceu: %w", err)
+	}
+	if err := chromedp.Run(ctx, chromedp.Evaluate(`
+		(function() {
+			var el = document.querySelector('button[aria-label="Adicionar nota"]');
+			if (el) { el.click(); return true; }
+			var btns = document.querySelectorAll('button[id^="secondary-actions-list"]');
+			for (var i = 0; i < btns.length; i++) {
+				if (btns[i].textContent.includes('Adicionar nota')) {
+					btns[i].click();
+					return true;
+				}
+			}
+			return false;
+		})()
+	`, nil)); err != nil {
 		return fmt.Errorf("botão 'Adicionar nota' não encontrado: %w", err)
 	}
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(2 * time.Second)
 
 	noteInputCtx, noteInputCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer noteInputCancel()
@@ -757,21 +801,6 @@ func ensureLogin(ctx context.Context) error {
 	return nil
 }
 
-func jsClick(sel string) chromedp.Action {
-	return chromedp.Evaluate(fmt.Sprintf(
-		`document.querySelector(%q)?.click()`, sel,
-	), nil)
-}
-
-func jsClickXPath(xpath string) chromedp.Action {
-	return chromedp.Evaluate(fmt.Sprintf(
-		`(function(){
-			var r = document.evaluate(%q, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-			if (r.singleNodeValue) { r.singleNodeValue.click(); return true; }
-			return false;
-		})()`, xpath,
-	), nil)
-}
 
 func findChrome() string {
 	candidates := []string{
