@@ -429,20 +429,38 @@ func collectSaleData(ctx context.Context, result *saleResult) {
 
 // openMenuAndClickCancel opens the overflow menu and clicks "Cancelar venda".
 func openMenuAndClickCancel(ctx context.Context) error {
+	// Try clicking the menu button, with JS fallback
 	if err := chromedp.Run(ctx,
 		chromedp.Click(`button[data-testid="open-floating-menu-without-tooltip"]`, chromedp.ByQuery),
 	); err != nil {
-		return fmt.Errorf("menu flutuante não encontrado: %w", err)
+		// JS fallback for menu button
+		if err2 := chromedp.Run(ctx, jsClick(`button[data-testid="open-floating-menu-without-tooltip"]`)); err2 != nil {
+			if err3 := chromedp.Run(ctx, jsClick(`button[aria-label="open-floating-menu"]`)); err3 != nil {
+				return fmt.Errorf("menu flutuante não encontrado: %w", err)
+			}
+		}
 	}
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(3 * time.Second)
 
-	cancelBtnCtx, cancelBtnCancel := context.WithTimeout(ctx, 10*time.Second)
+	// Try finding "Cancelar venda" button with multiple strategies
+	cancelBtnCtx, cancelBtnCancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancelBtnCancel()
+
+	// Strategy 1: aria-label selector
 	if err := chromedp.Run(cancelBtnCtx,
 		chromedp.WaitVisible(`button[aria-label="Cancelar venda"]`, chromedp.ByQuery),
 		chromedp.Click(`button[aria-label="Cancelar venda"]`, chromedp.ByQuery),
 	); err != nil {
-		return fmt.Errorf("botão 'Cancelar venda' não encontrado: %w", err)
+		// Strategy 2: JS click by aria-label
+		if err2 := chromedp.Run(ctx, jsClick(`button[aria-label="Cancelar venda"]`)); err2 != nil {
+			// Strategy 3: XPath by button text
+			if err3 := chromedp.Run(ctx, jsClickXPath(`//button[.//span[contains(text(), "Cancelar venda")]]`)); err3 != nil {
+				// Strategy 4: find by id pattern (secondary-actions-list-1)
+				if err4 := chromedp.Run(ctx, jsClick(`#secondary-actions-list-1`)); err4 != nil {
+					return fmt.Errorf("botão 'Cancelar venda' não encontrado: %w", err)
+				}
+			}
+		}
 	}
 	time.Sleep(2 * time.Second)
 	return nil
