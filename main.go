@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	osexec "os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -76,25 +77,7 @@ func main() {
 		fmt.Printf("[INFO] Chrome encontrado: %s\n", chromePath)
 	}
 
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.UserDataDir(profileDir),
-		chromedp.Flag("disable-gpu", false),
-		chromedp.Flag("no-first-run", true),
-		chromedp.Flag("no-default-browser-check", true),
-		chromedp.Flag("disable-extensions", false),
-		chromedp.Flag("no-sandbox", true),
-		chromedp.WindowSize(1280, 900),
-	)
-	if headless {
-		opts = append(opts, chromedp.Flag("headless", "new"))
-		opts = append(opts, chromedp.Flag("disable-blink-features", "AutomationControlled"))
-		opts = append(opts, chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"))
-	} else {
-		opts = append(opts, chromedp.Flag("headless", false))
-	}
-	if chromePath != "" {
-		opts = append(opts, chromedp.ExecPath(chromePath))
-	}
+	opts := buildAllocOpts(profileDir, headless, chromePath)
 
 	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx, opts...)
 	defer allocCancel()
@@ -146,38 +129,67 @@ func main() {
 				}
 			}
 		} else {
-			// Parallel processing with goroutines
-			var wg sync.WaitGroup
-			sem := make(chan struct{}, workers)
+			// Parallel processing: each worker gets its own independent Chrome process
+			// (tabs in a single browser serialize actions on inactive tabs)
+			type workerJob struct {
+				idx  int
+				sale saleURL
+			}
 
+			jobs := make(chan workerJob, total)
 			for i, su := range saleURLs {
-				select {
-				case <-ctx.Done():
-					fmt.Println("[INFO] Cancelado pelo usuário.")
-					goto done
-				default:
+				jobs <- workerJob{idx: i, sale: su}
+			}
+			close(jobs)
+
+			// Copy profile for each worker so each Chrome instance has the login session
+			workerProfiles := make([]string, workers)
+			for w := 0; w < workers; w++ {
+				wp := profileDir + fmt.Sprintf("-worker-%d", w)
+				os.RemoveAll(wp)
+				if runtime.GOOS == "windows" {
+					osexec.Command("xcopy", profileDir, wp, "/E", "/I", "/Q", "/Y").Run()
+				} else {
+					osexec.Command("cp", "-r", profileDir, wp).Run()
 				}
+				// Remove lock files so Chrome can start fresh with this profile copy
+				os.Remove(filepath.Join(wp, "SingletonLock"))
+				os.Remove(filepath.Join(wp, "SingletonSocket"))
+				os.Remove(filepath.Join(wp, "SingletonCookie"))
+				workerProfiles[w] = wp
+			}
 
+			var wg sync.WaitGroup
+			for w := 0; w < workers; w++ {
 				wg.Add(1)
-				sem <- struct{}{} // acquire worker slot
-
-				go func(idx int, s saleURL) {
+				go func(workerID int) {
 					defer wg.Done()
-					defer func() { <-sem }() // release worker slot
 
-					// Stagger start to avoid race conditions between tabs
-					time.Sleep(time.Duration(idx) * 2 * time.Second)
+					wOpts := buildAllocOpts(workerProfiles[workerID], headless, chromePath)
+					wAllocCtx, wAllocCancel := chromedp.NewExecAllocator(ctx, wOpts...)
+					defer wAllocCancel()
+					wBrowserCtx, wBrowserCancel := chromedp.NewContext(wAllocCtx)
+					defer wBrowserCancel()
 
-					// Each goroutine gets its own tab
-					tabCtx, tabCancel := chromedp.NewContext(browserCtx)
-					defer tabCancel()
+					// Start browser
+					if err := chromedp.Run(wBrowserCtx, chromedp.Navigate("about:blank")); err != nil {
+						fmt.Printf("[ERRO] Worker %d: falha ao iniciar browser: %v\n", workerID+1, err)
+						return
+					}
 
-					fmt.Printf("━━━ [%d/%d] Processando: %s (worker) ━━━\n", idx+1, total, s.number)
-					results[idx] = processSale(tabCtx, s.url, s.number, idx+1, total)
-					fmt.Println()
-				}(i, su)
+					for job := range jobs {
+						fmt.Printf("━━━ [%d/%d] Processando: %s (worker %d) ━━━\n", job.idx+1, total, job.sale.number, workerID+1)
+						results[job.idx] = processSale(wBrowserCtx, job.sale.url, job.sale.number, job.idx+1, total)
+						fmt.Println()
+					}
+				}(w)
 			}
 			wg.Wait()
+
+			// Clean up worker profiles
+			for _, wp := range workerProfiles {
+				os.RemoveAll(wp)
+			}
 		}
 
 	done:
@@ -193,6 +205,30 @@ func main() {
 	}
 
 	fmt.Println("[INFO] Programa encerrado.")
+}
+
+// buildAllocOpts constructs Chrome allocator options for a given profile directory.
+func buildAllocOpts(profileDir string, headless bool, chromePath string) []chromedp.ExecAllocatorOption {
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.UserDataDir(profileDir),
+		chromedp.Flag("disable-gpu", false),
+		chromedp.Flag("no-first-run", true),
+		chromedp.Flag("no-default-browser-check", true),
+		chromedp.Flag("disable-extensions", false),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.WindowSize(1280, 900),
+	)
+	if headless {
+		opts = append(opts, chromedp.Flag("headless", "new"))
+		opts = append(opts, chromedp.Flag("disable-blink-features", "AutomationControlled"))
+		opts = append(opts, chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"))
+	} else {
+		opts = append(opts, chromedp.Flag("headless", false))
+	}
+	if chromePath != "" {
+		opts = append(opts, chromedp.ExecPath(chromePath))
+	}
+	return opts
 }
 
 // selectMode prompts the user to choose between traditional and headless mode.
