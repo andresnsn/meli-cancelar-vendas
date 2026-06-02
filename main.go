@@ -446,6 +446,7 @@ func processSale(ctx context.Context, saleURL, saleNumber string, current, total
 	// Steps 5-6b: Cancel with retry and verification
 	maxAttempts := 3
 	cancelled := false
+	lastErrorSnackbar := "" // Track the last error snackbar text across retries
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if attempt > 1 {
 			fmt.Printf("%s [RETRY] Tentativa %d de cancelamento...\n", prefix, attempt)
@@ -462,7 +463,10 @@ func processSale(ctx context.Context, saleURL, saleNumber string, current, total
 		if err := openMenuAndClickCancel(ctx); err != nil {
 			fmt.Printf("%s [ERRO] %v\n", prefix, err)
 			if attempt == maxAttempts {
-				if strings.Contains(err.Error(), "Cancelar venda") {
+				// If we detected an error snackbar in a previous attempt, use that message
+				if lastErrorSnackbar != "" {
+					result.Cancelled = fmt.Sprintf("Erro do Mercado Livre: %s", lastErrorSnackbar)
+				} else if strings.Contains(err.Error(), "Cancelar venda") {
 					result.Cancelled = "Botão Cancelar venda não apareceu"
 				} else if strings.Contains(err.Error(), "menu flutuante") {
 					result.Cancelled = "Menu de ações não apareceu"
@@ -481,40 +485,68 @@ func processSale(ctx context.Context, saleURL, saleNumber string, current, total
 		if err := selectReasonAndConfirm(ctx); err != nil {
 			fmt.Printf("%s [ERRO] %v\n", prefix, err)
 			if attempt == maxAttempts {
-				result.Cancelled = "Erro ao confirmar cancelamento"
+				if lastErrorSnackbar != "" {
+					result.Cancelled = fmt.Sprintf("Erro do Mercado Livre: %s", lastErrorSnackbar)
+				} else {
+					result.Cancelled = "Erro ao confirmar cancelamento"
+				}
 				return result
 			}
 			continue
 		}
 
 		// Step 6b: Verify cancellation via snackbar + mandatory page reload
-		// 1) Check for snackbar confirmation (appears within seconds)
+		// 1) Check for snackbar: success (green, text "cancelamos") or error (red, text "erro")
 		// 2) Always reload page and verify status field changed to contain "cancel"
 		fmt.Printf("%s [6b/8] Verificando cancelamento (aguardando confirmação)...\n", prefix)
 
 		snackbarFound := false
+		errorSnackbarFound := false
 		var snackbarText string
 		snackCtx, snackCancel := context.WithTimeout(ctx, 10*time.Second)
 		for i := 0; i < 10; i++ {
 			time.Sleep(1 * time.Second)
 			chromedp.Run(snackCtx, chromedp.Evaluate(`
 				(function() {
+					// Check for any snackbar message (success or error)
 					var el = document.querySelector('.andes-snackbar__message');
 					if (el) return el.textContent.trim();
-					var sr = document.querySelector('span.andes-visually-hidden[role="alert"]');
-					if (sr && sr.textContent.includes('cancelamos')) return sr.textContent.trim();
+					// Check for snackbar via role="alert" or aria-live
+					var alerts = document.querySelectorAll('[role="alert"], [aria-live="polite"], [aria-live="assertive"]');
+					for (var i = 0; i < alerts.length; i++) {
+						var t = alerts[i].textContent.trim();
+						if (t.includes('cancelamos') || t.includes('erro') || t.includes('Erro') || t.includes('error')) return t;
+					}
+					// Check for any visible feedback/snackbar container
+					var containers = document.querySelectorAll('[class*="snackbar"], [class*="feedback"], [class*="toast"]');
+					for (var j = 0; j < containers.length; j++) {
+						var ct = containers[j].textContent.trim();
+						if (ct.length > 5) return ct;
+					}
 					return '';
 				})()
 			`, &snackbarText))
-			if strings.Contains(strings.ToLower(snackbarText), "cancelamos") {
+			snackbarLower := strings.ToLower(snackbarText)
+			if strings.Contains(snackbarLower, "cancelamos") {
 				snackbarFound = true
+				break
+			}
+			if snackbarText != "" && (strings.Contains(snackbarLower, "erro") || strings.Contains(snackbarLower, "error") || strings.Contains(snackbarLower, "falha") || strings.Contains(snackbarLower, "tente novamente")) {
+				errorSnackbarFound = true
+				lastErrorSnackbar = snackbarText
 				break
 			}
 		}
 		snackCancel()
 
 		if snackbarFound {
-			fmt.Printf("%s        Snackbar detectado: \"%s\"\n", prefix, snackbarText)
+			fmt.Printf("%s        Snackbar de sucesso: \"%s\"\n", prefix, snackbarText)
+		} else if errorSnackbarFound {
+			fmt.Printf("%s        Snackbar de ERRO detectado: \"%s\"\n", prefix, snackbarText)
+			if attempt < maxAttempts {
+				fmt.Printf("%s        Retentando cancelamento...\n", prefix)
+				continue
+			}
 		} else {
 			fmt.Printf("%s        Snackbar não detectado, verificando via reload...\n", prefix)
 		}
@@ -544,7 +576,10 @@ func processSale(ctx context.Context, saleURL, saleNumber string, current, total
 		} else {
 			fmt.Printf("%s [AVISO] Tentativa %d: cancelamento NÃO confirmado (status: '%s')\n", prefix, attempt, verifyStatus)
 			if attempt == maxAttempts {
-				if strings.Contains(strings.ToLower(verifyStatus), "despachar") || strings.Contains(strings.ToLower(verifyStatus), "pronto") {
+				// Prioritize error snackbar message over generic errors
+				if lastErrorSnackbar != "" {
+					result.Cancelled = fmt.Sprintf("Erro do Mercado Livre: %s", lastErrorSnackbar)
+				} else if strings.Contains(strings.ToLower(verifyStatus), "despachar") || strings.Contains(strings.ToLower(verifyStatus), "pronto") {
 					result.Cancelled = "Botão Cancelar venda não apareceu"
 				} else if verifyStatus == "" {
 					result.Cancelled = "Erro: status da venda não identificado"
