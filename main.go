@@ -106,11 +106,19 @@ func main() {
 
 		saleURLs := normalizeInputs(inputs)
 		total := len(saleURLs)
-		fmt.Printf("\n[INFO] %d venda(s) para processar com %d worker(s).\n\n", total, workers)
+
+		// Avoid opening more workers than necessary
+		activeWorkers := workers
+		if total < activeWorkers {
+			activeWorkers = total
+			fmt.Printf("\n[INFO] %d venda(s) para processar — ajustando para %d worker(s).\n\n", total, activeWorkers)
+		} else {
+			fmt.Printf("\n[INFO] %d venda(s) para processar com %d worker(s).\n\n", total, activeWorkers)
+		}
 
 		results := make([]saleResult, total)
 
-		if workers <= 1 {
+		if activeWorkers <= 1 {
 			// Sequential processing
 			for i, su := range saleURLs {
 				select {
@@ -143,8 +151,8 @@ func main() {
 			close(jobs)
 
 			// Copy profile for each worker so each Chrome instance has the login session
-			workerProfiles := make([]string, workers)
-			for w := 0; w < workers; w++ {
+			workerProfiles := make([]string, activeWorkers)
+			for w := 0; w < activeWorkers; w++ {
 				wp := profileDir + fmt.Sprintf("-worker-%d", w)
 				os.RemoveAll(wp)
 				if runtime.GOOS == "windows" {
@@ -160,7 +168,7 @@ func main() {
 			}
 
 			var wg sync.WaitGroup
-			for w := 0; w < workers; w++ {
+			for w := 0; w < activeWorkers; w++ {
 				wg.Add(1)
 				go func(workerID int) {
 					defer wg.Done()
