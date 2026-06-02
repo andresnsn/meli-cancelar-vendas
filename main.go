@@ -361,8 +361,15 @@ func processSale(ctx context.Context, saleURL, saleNumber string, current, total
 	}
 	fmt.Printf("%s        Sem nota fiscal — prosseguindo com cancelamento.\n", prefix)
 
+	// Check if already cancelled
+	if strings.Contains(strings.ToLower(result.Status), "cancel") {
+		fmt.Printf("%s [SKIP] Venda já está cancelada (status: %s).\n", prefix, result.Status)
+		result.Cancelled = "Já cancelada"
+		return result
+	}
+
 	// Steps 5-6b: Cancel with retry and verification
-	maxAttempts := 2
+	maxAttempts := 3
 	cancelled := false
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if attempt > 1 {
@@ -397,9 +404,40 @@ func processSale(ctx context.Context, saleURL, saleNumber string, current, total
 			continue
 		}
 
-		// Step 6b: Verify cancellation actually took effect
-		fmt.Printf("%s [6b/8] Verificando cancelamento...\n", prefix)
-		time.Sleep(3 * time.Second)
+		// Step 6b: Verify cancellation via snackbar + mandatory page reload
+		// 1) Check for snackbar confirmation (appears within seconds)
+		// 2) Always reload page and verify status field changed to contain "cancel"
+		fmt.Printf("%s [6b/8] Verificando cancelamento (aguardando confirmação)...\n", prefix)
+
+		snackbarFound := false
+		var snackbarText string
+		snackCtx, snackCancel := context.WithTimeout(ctx, 10*time.Second)
+		for i := 0; i < 10; i++ {
+			time.Sleep(1 * time.Second)
+			chromedp.Run(snackCtx, chromedp.Evaluate(`
+				(function() {
+					var el = document.querySelector('.andes-snackbar__message');
+					if (el) return el.textContent.trim();
+					var sr = document.querySelector('span.andes-visually-hidden[role="alert"]');
+					if (sr && sr.textContent.includes('cancelamos')) return sr.textContent.trim();
+					return '';
+				})()
+			`, &snackbarText))
+			if strings.Contains(strings.ToLower(snackbarText), "cancelamos") {
+				snackbarFound = true
+				break
+			}
+		}
+		snackCancel()
+
+		if snackbarFound {
+			fmt.Printf("%s        Snackbar detectado: \"%s\"\n", prefix, snackbarText)
+		} else {
+			fmt.Printf("%s        Snackbar não detectado, verificando via reload...\n", prefix)
+		}
+
+		// Mandatory: reload page and confirm status contains "cancel"
+		time.Sleep(2 * time.Second)
 		chromedp.Run(ctx, chromedp.Navigate(saleURL), chromedp.WaitReady("body", chromedp.ByQuery))
 		vCtx, vCancel := context.WithTimeout(ctx, 15*time.Second)
 		chromedp.Run(vCtx, chromedp.WaitVisible(`.row-card-container`, chromedp.ByQuery))
@@ -420,13 +458,8 @@ func processSale(ctx context.Context, saleURL, saleNumber string, current, total
 			fmt.Printf("%s [OK] Venda cancelada com sucesso! (status: %s)\n", prefix, verifyStatus)
 			cancelled = true
 			break
-		} else if verifyStatus == "" {
-			result.Cancelled = "Sim (não verificado)"
-			fmt.Printf("%s [OK] Fluxo de cancelamento concluído (verificação indisponível)\n", prefix)
-			cancelled = true
-			break
 		} else {
-			fmt.Printf("%s [AVISO] Tentativa %d: status ainda '%s'\n", prefix, attempt, verifyStatus)
+			fmt.Printf("%s [AVISO] Tentativa %d: cancelamento NÃO confirmado (status: '%s')\n", prefix, attempt, verifyStatus)
 			if attempt == maxAttempts {
 				result.Cancelled = fmt.Sprintf("Falhou (status: %s)", verifyStatus)
 				fmt.Printf("%s [ERRO] Cancelamento NÃO confirmado após %d tentativas.\n", prefix, maxAttempts)
@@ -788,12 +821,15 @@ func cellName(col, row int) string {
 
 func printSummary(results []saleResult) {
 	cancelled := 0
+	alreadyCancelled := 0
 	skipped := 0
 	errors := 0
 	for _, r := range results {
 		switch {
 		case r.Cancelled == "Sim":
 			cancelled++
+		case r.Cancelled == "Já cancelada":
+			alreadyCancelled++
 		case strings.HasPrefix(r.Cancelled, "Não cancelado"):
 			skipped++
 		default:
@@ -802,7 +838,7 @@ func printSummary(results []saleResult) {
 	}
 	fmt.Println()
 	fmt.Println("═══════════════════════════════════════")
-	fmt.Printf("Resultado: %d cancelada(s), %d pulada(s), %d erro(s)\n", cancelled, skipped, errors)
+	fmt.Printf("Resultado: %d cancelada(s), %d já cancelada(s), %d pulada(s), %d erro(s)\n", cancelled, alreadyCancelled, skipped, errors)
 	fmt.Println("═══════════════════════════════════════")
 }
 
