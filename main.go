@@ -404,7 +404,7 @@ func processSale(ctx context.Context, saleURL, saleNumber string, current, total
 		chromedp.WaitReady("body", chromedp.ByQuery),
 	); err != nil {
 		fmt.Printf("%s [ERRO] Falha ao navegar: %v\n", prefix, err)
-		result.Cancelled = "Erro: falha ao navegar"
+		result.Cancelled = "Erro: página não carregou"
 		return result
 	}
 
@@ -416,7 +416,7 @@ func processSale(ctx context.Context, saleURL, saleNumber string, current, total
 		chromedp.WaitVisible(`.row-card-container`, chromedp.ByQuery),
 	); err != nil {
 		fmt.Printf("%s [ERRO] Card não encontrado: %v\n", prefix, err)
-		result.Cancelled = "Erro: card não encontrado"
+		result.Cancelled = "Erro: venda não encontrada na página"
 		return result
 	}
 	time.Sleep(1 * time.Second)
@@ -462,7 +462,15 @@ func processSale(ctx context.Context, saleURL, saleNumber string, current, total
 		if err := openMenuAndClickCancel(ctx); err != nil {
 			fmt.Printf("%s [ERRO] %v\n", prefix, err)
 			if attempt == maxAttempts {
-				result.Cancelled = fmt.Sprintf("Erro: %v", err)
+				if strings.Contains(err.Error(), "Cancelar venda") {
+					result.Cancelled = "Botão Cancelar venda não apareceu"
+				} else if strings.Contains(err.Error(), "menu flutuante") {
+					result.Cancelled = "Menu de ações não apareceu"
+				} else if strings.Contains(err.Error(), "modal") {
+					result.Cancelled = "Modal de cancelamento não apareceu"
+				} else {
+					result.Cancelled = "Erro no fluxo de cancelamento"
+				}
 				return result
 			}
 			continue
@@ -473,7 +481,7 @@ func processSale(ctx context.Context, saleURL, saleNumber string, current, total
 		if err := selectReasonAndConfirm(ctx); err != nil {
 			fmt.Printf("%s [ERRO] %v\n", prefix, err)
 			if attempt == maxAttempts {
-				result.Cancelled = fmt.Sprintf("Erro: %v", err)
+				result.Cancelled = "Erro ao confirmar cancelamento"
 				return result
 			}
 			continue
@@ -536,7 +544,13 @@ func processSale(ctx context.Context, saleURL, saleNumber string, current, total
 		} else {
 			fmt.Printf("%s [AVISO] Tentativa %d: cancelamento NÃO confirmado (status: '%s')\n", prefix, attempt, verifyStatus)
 			if attempt == maxAttempts {
-				result.Cancelled = fmt.Sprintf("Falhou (status: %s)", verifyStatus)
+				if strings.Contains(strings.ToLower(verifyStatus), "despachar") || strings.Contains(strings.ToLower(verifyStatus), "pronto") {
+					result.Cancelled = "Botão Cancelar venda não apareceu"
+				} else if verifyStatus == "" {
+					result.Cancelled = "Erro: status da venda não identificado"
+				} else {
+					result.Cancelled = fmt.Sprintf("Cancelamento não confirmado (status: %s)", verifyStatus)
+				}
 				fmt.Printf("%s [ERRO] Cancelamento NÃO confirmado após %d tentativas.\n", prefix, maxAttempts)
 				return result
 			}
