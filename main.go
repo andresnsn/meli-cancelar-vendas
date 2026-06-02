@@ -97,8 +97,21 @@ func main() {
 		log.Fatalf("[ERRO] Falha ao verificar login: %v", err)
 	}
 
+	// Persistent line reader for paste-friendly input
+	lineCh := make(chan string, 1000)
+	go func() {
+		for {
+			line, err := reader.ReadString('\n')
+			lineCh <- strings.TrimSpace(line)
+			if err != nil {
+				close(lineCh)
+				return
+			}
+		}
+	}()
+
 	for {
-		inputs := readInputs(reader)
+		inputs := readInputs(lineCh)
 		if len(inputs) == 0 {
 			fmt.Println("[INFO] Nenhuma URL/número fornecido. Encerrando.")
 			break
@@ -330,25 +343,43 @@ func normalizeInput(input string) (string, string) {
 	return input, input
 }
 
-// readInputs reads URLs or sale numbers from stdin.
-func readInputs(reader *bufio.Reader) []string {
-	fmt.Println("Cole as URLs ou números de venda abaixo (uma por linha).")
-	fmt.Println("Quando terminar, pressione Enter em uma linha vazia para iniciar.")
-	fmt.Println("Para sair, pressione Enter sem colar nada.")
+// readInputs reads URLs or sale numbers from the line channel.
+// Auto-detects paste completion: after receiving input, if no more data arrives
+// within 2 seconds, it starts processing automatically.
+func readInputs(lineCh <-chan string) []string {
+	fmt.Println("Cole as URLs ou números de venda abaixo.")
+	fmt.Println("Após colar, aguarde 2 segundos para iniciar automaticamente,")
+	fmt.Println("ou pressione Enter em uma linha vazia para iniciar.")
 	fmt.Println()
 
 	var inputs []string
 	for {
-		line, _ := reader.ReadString('\n')
-		line = strings.TrimSpace(line)
-		if line == "" {
-			break
+		if len(inputs) == 0 {
+			// Wait indefinitely for the first line
+			line, ok := <-lineCh
+			if !ok {
+				return inputs
+			}
+			if line == "" {
+				return nil
+			}
+			inputs = append(inputs, line)
+			fmt.Printf("  + Entrada adicionada (%d)\n", len(inputs))
+		} else {
+			// After first input, use timeout to auto-detect end of paste
+			select {
+			case line, ok := <-lineCh:
+				if !ok || line == "" {
+					return inputs
+				}
+				inputs = append(inputs, line)
+				fmt.Printf("  + Entrada adicionada (%d)\n", len(inputs))
+			case <-time.After(2 * time.Second):
+				fmt.Printf("  [AUTO] %d entrada(s) detectada(s). Iniciando...\n", len(inputs))
+				return inputs
+			}
 		}
-		inputs = append(inputs, line)
-		fmt.Printf("  + Entrada adicionada (%d)\n", len(inputs))
 	}
-
-	return inputs
 }
 
 // processSale handles the full flow for a single sale: collect data, check invoice, cancel, add note.
