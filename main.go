@@ -79,23 +79,29 @@ func main() {
 
 	opts := buildAllocOpts(profileDir, headless, chromePath)
 
-	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx, opts...)
-	defer allocCancel()
-
-	browserCtx, browserCancel := chromedp.NewContext(allocCtx,
-		chromedp.WithLogf(log.Printf),
-	)
-	defer browserCancel()
-
 	if headless {
 		fmt.Println("[INFO] Iniciando o Chrome em modo headless...")
 	} else {
 		fmt.Println("[INFO] Iniciando o Chrome...")
 	}
 
+	// Open initial Chrome for login verification
+	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx, opts...)
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx,
+		chromedp.WithLogf(log.Printf),
+	)
+
 	if err := ensureLogin(browserCtx); err != nil {
 		log.Fatalf("[ERRO] Falha ao verificar login: %v", err)
 	}
+
+	// Close the initial Chrome after login verification.
+	// On Windows, Chrome holds mandatory file locks on profile files;
+	// workers need to copy the profile and can't do so while Chrome is running.
+	browserCancel()
+	allocCancel()
+	time.Sleep(1 * time.Second) // Allow Chrome process to fully exit
+	fmt.Println("[INFO] Login confirmado. Chrome fechado para preparar workers.")
 
 	// Persistent line reader for paste-friendly input
 	lineCh := make(chan string, 1000)
@@ -132,23 +138,37 @@ func main() {
 		results := make([]saleResult, total)
 
 		if activeWorkers <= 1 {
-			// Sequential processing
+			// Sequential processing: open one Chrome instance
+			seqOpts := buildAllocOpts(profileDir, headless, chromePath)
+			seqAllocCtx, seqAllocCancel := chromedp.NewExecAllocator(ctx, seqOpts...)
+			seqBrowserCtx, seqBrowserCancel := chromedp.NewContext(seqAllocCtx)
+			if err := chromedp.Run(seqBrowserCtx, chromedp.Navigate("about:blank")); err != nil {
+				fmt.Printf("[ERRO] Falha ao iniciar Chrome: %v\n", err)
+				seqBrowserCancel()
+				seqAllocCancel()
+				goto done
+			}
+
 			for i, su := range saleURLs {
 				select {
 				case <-ctx.Done():
 					fmt.Println("[INFO] Cancelado pelo usuário.")
+					seqBrowserCancel()
+					seqAllocCancel()
 					goto done
 				default:
 				}
 
 				fmt.Printf("━━━ [%d/%d] Processando: %s ━━━\n", i+1, total, su.number)
-				results[i] = processSale(browserCtx, su.url, su.number, i+1, total)
+				results[i] = processSale(seqBrowserCtx, su.url, su.number, i+1, total)
 				fmt.Println()
 
 				if i < total-1 {
 					time.Sleep(2 * time.Second)
 				}
 			}
+			seqBrowserCancel()
+			seqAllocCancel()
 		} else {
 			// Parallel processing: each worker gets its own independent Chrome process
 			// (tabs in a single browser serialize actions on inactive tabs)
@@ -169,7 +189,11 @@ func main() {
 				wp := profileDir + fmt.Sprintf("-worker-%d", w)
 				os.RemoveAll(wp)
 				if runtime.GOOS == "windows" {
-					osexec.Command("xcopy", profileDir, wp, "/E", "/I", "/Q", "/Y").Run()
+					// Use robocopy for reliable copying (handles long paths, hidden files)
+					// /E = include subdirs, /R:1 /W:1 = minimal retry
+					cmd := osexec.Command("robocopy", profileDir, wp, "/E", "/R:1", "/W:1", "/NFL", "/NDL", "/NJH", "/NJS")
+					cmd.Run()
+					// robocopy exit code < 8 means success; ignore errors
 				} else {
 					osexec.Command("cp", "-r", profileDir, wp).Run()
 				}
@@ -177,6 +201,10 @@ func main() {
 				os.Remove(filepath.Join(wp, "SingletonLock"))
 				os.Remove(filepath.Join(wp, "SingletonSocket"))
 				os.Remove(filepath.Join(wp, "SingletonCookie"))
+				os.Remove(filepath.Join(wp, "lockfile"))
+				// Remove Windows-specific lock files in Default profile
+				os.Remove(filepath.Join(wp, "Default", "lockfile"))
+				os.Remove(filepath.Join(wp, "Default", "LOCK"))
 				workerProfiles[w] = wp
 			}
 
