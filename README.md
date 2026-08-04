@@ -26,7 +26,7 @@ Baixe o binário pré-compilado da [página de releases](https://github.com/andr
 ### Opção 2: Compilar do fonte
 
 ```bash
-# Requer Go 1.22+
+# Requer Go 1.26+
 git clone https://github.com/andresnsn/meli-cancelar-vendas.git
 cd meli-cancelar-vendas
 go build -o meli-cancelar-vendas .
@@ -35,8 +35,44 @@ go build -o meli-cancelar-vendas .
 #### Compilar para Windows (cross-compile)
 
 ```bash
-GOOS=windows GOARCH=amd64 go build -o meli-cancelar-vendas.exe .
+# 64 bits / Intel-AMD (recomendado para a maioria dos PCs)
+GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o CancelarVendasML.exe .
+
+# ARM64 (Copilot+ PC / Surface com Snapdragon)
+GOOS=windows GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o CancelarVendasML-arm64.exe .
+
+# 32 bits (fallback para máquinas antigas)
+GOOS=windows GOARCH=386 go build -trimpath -ldflags="-s -w" -o CancelarVendasML-32bits.exe .
 ```
+
+#### Metadados do executável Windows (publisher/versão + manifest)
+
+O build para Windows embute metadados de versão/fabricante e um manifest de
+compatibilidade (`versioninfo.json` + `app.manifest`). Isso ajuda a reduzir
+avisos de *reputação* do SmartScreen/Defender ("editor desconhecido"), mas
+**não substitui uma assinatura digital**: o binário continua SEM assinatura
+Authenticode. Os arquivos `resource_windows_*.syso` (amd64, arm64 e 386) são
+gerados a partir do `versioninfo.json`:
+
+```bash
+go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
+go generate ./...
+```
+
+> Não deixe um `resource.syso` sem sufixo de arquitetura no diretório — ele
+> quebra o build 32 bits (`unknown relocation type 3`).
+
+#### Erro "Esse aplicativo não pode ser executado no seu PC"
+
+Duas causas comuns, com tratamentos diferentes:
+
+1. **Arquitetura incompatível** (mais frequente): o `.exe` foi compilado para uma
+   CPU diferente da máquina. Use a variante correspondente ao seu Windows —
+   `amd64` (Intel/AMD), `arm64` (Copilot+ PC / Snapdragon) ou `386` (32 bits).
+   Metadados/manifest **não** corrigem esse caso.
+2. **Política corporativa / reputação** (AppLocker, WDAC, SmartScreen): o
+   ambiente bloqueia executáveis sem assinatura. O fim definitivo do aviso exige
+   um **certificado de code-signing (Authenticode/EV)**.
 
 #### Compilar para macOS
 
@@ -95,11 +131,14 @@ Para forçar um novo login, delete a pasta do perfil.
 
 ```
 .
-├── main.go          # Código fonte principal
-├── go.mod           # Dependências Go
-├── go.sum           # Checksums das dependências
-├── README.md        # Este arquivo
-└── .gitignore       # Arquivos ignorados pelo git
+├── main.go                     # Código fonte principal
+├── versioninfo.json            # Metadados do executável Windows
+├── app.manifest                # Manifest de compatibilidade Windows
+├── resource_windows_*.syso     # Recursos gerados (amd64/arm64/386)
+├── go.mod                      # Dependências Go
+├── go.sum                      # Checksums das dependências
+├── README.md                   # Este arquivo
+└── .gitignore                  # Arquivos ignorados pelo git
 ```
 
 ## Tecnologia

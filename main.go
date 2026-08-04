@@ -1,5 +1,11 @@
 package main
 
+// Gera os recursos do Windows (metadados de versao/publisher + manifest) a partir
+// de versioninfo.json. Requer: go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
+//go:generate goversioninfo -64 -o resource_windows_amd64.syso versioninfo.json
+//go:generate goversioninfo -64=false -o resource_windows_386.syso versioninfo.json
+//go:generate goversioninfo -arm -64 -o resource_windows_arm64.syso versioninfo.json
+
 import (
 	"bufio"
 	"context"
@@ -1066,7 +1072,6 @@ func ensureLogin(ctx context.Context) error {
 	fmt.Println("[OK] Já está logado no Mercado Livre!")
 	return nil
 }
-
 
 func findChrome() string {
 	candidates := []string{
